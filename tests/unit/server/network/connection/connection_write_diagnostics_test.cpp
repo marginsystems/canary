@@ -137,8 +137,8 @@ protected:
 		logger->reset();
 		connection->firstReadError.clear();
 		const std::error_code readError = asio::error::eof;
-		read(readError);
 		read(asio::error::operation_aborted);
+		read(readError);
 		queueMessage();
 		reportFailedWrite();
 
@@ -287,6 +287,7 @@ TEST_F(ConnectionWriteDiagnosticsTest, WriteFailureRetainsPeerAndReportsClosureW
 	unacceptedConnection->onWriteOperation(asio::error::bad_descriptor, 0, 3, true);
 	const auto unacceptedDiagnostics = writeDiagnostics();
 	ASSERT_EQ(1, unacceptedDiagnostics.size());
+	EXPECT_EQ("warning", unacceptedDiagnostics.front().first);
 	EXPECT_NE(std::string::npos, unacceptedDiagnostics.front().second.find("age_ms=-1"));
 	EXPECT_NE(std::string::npos, unacceptedDiagnostics.front().second.find("close_line=none"));
 }

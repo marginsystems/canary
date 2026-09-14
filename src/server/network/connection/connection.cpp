@@ -23,6 +23,7 @@
 #ifndef USE_PRECOMPILED_HEADERS
 	#include <atomic>
 	#include <limits>
+	#include <magic_enum/magic_enum.hpp>
 	#include <optional>
 	#include <utility>
 #endif
@@ -32,23 +33,6 @@ namespace {
 	constexpr auto PROTOCOL_RELEASE_WARNING_INTERVAL = std::chrono::seconds(5);
 	constexpr auto WRITE_ERROR_WARNING_INTERVAL = std::chrono::seconds(5);
 	std::atomic<uint64_t> nextConnectionId { 1 };
-
-	std::optional<uint64_t> takeWriteErrorWarning() {
-		static std::mutex warningLock;
-		static auto nextWarningAt = std::chrono::steady_clock::time_point {};
-		static uint64_t suppressed = 0;
-
-		std::scoped_lock lock(warningLock);
-		const auto now = std::chrono::steady_clock::now();
-		if (now < nextWarningAt) {
-			if (suppressed < std::numeric_limits<uint64_t>::max()) {
-				++suppressed;
-			}
-			return std::nullopt;
-		}
-		nextWarningAt = now + WRITE_ERROR_WARNING_INTERVAL;
-		return std::exchange(suppressed, 0);
-	}
 
 	bool shouldLogProtocolReleaseRetry() {
 		static std::mutex warningLock;
@@ -62,6 +46,18 @@ namespace {
 		nextWarningAt = now + PROTOCOL_RELEASE_WARNING_INTERVAL;
 		return true;
 	}
+}
+
+std::optional<uint64_t> Connection::takeWriteErrorWarning() {
+	const auto now = std::chrono::steady_clock::now();
+	if (now < nextWriteWarningAt) {
+		if (suppressedWriteWarnings < std::numeric_limits<uint64_t>::max()) {
+			++suppressedWriteWarnings;
+		}
+		return std::nullopt;
+	}
+	nextWriteWarningAt = now + WRITE_ERROR_WARNING_INTERVAL;
+	return std::exchange(suppressedWriteWarnings, 0);
 }
 
 ConnectionManager &ConnectionManager::getInstance() {
@@ -232,7 +228,7 @@ void Connection::parseProxyIdentification(const std::error_code &error) {
 	readTimer.cancel();
 
 	if (error || connectionState == CONNECTION_STATE_CLOSED) {
-		if (error && !firstReadError) {
+		if (error && error != asio::error::operation_aborted && !firstReadError) {
 			firstReadError = error;
 		}
 		if (error != asio::error::operation_aborted && error != asio::error::eof && error != asio::error::connection_reset) {
@@ -289,7 +285,7 @@ void Connection::parseHeader(const std::error_code &error) {
 	readTimer.cancel();
 
 	if (error) {
-		if (!firstReadError) {
+		if (error != asio::error::operation_aborted && !firstReadError) {
 			firstReadError = error;
 		}
 		if (error != asio::error::operation_aborted && error != asio::error::eof && error != asio::error::connection_reset) {
@@ -340,7 +336,7 @@ void Connection::parsePacket(const std::error_code &error) {
 
 	if (error || connectionState == CONNECTION_STATE_CLOSED) {
 		if (error) {
-			if (!firstReadError) {
+			if (error != asio::error::operation_aborted && !firstReadError) {
 				firstReadError = error;
 			}
 			g_logger().debug("[Connection::parsePacket] - Read error: {}", error.message());

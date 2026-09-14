@@ -10,6 +10,7 @@
 #pragma once
 
 #include <chrono>
+#include <optional>
 #include <source_location>
 #include <string>
 #include <system_error>
@@ -105,6 +106,7 @@ private:
 	static void handleTimeout(ConnectionWeak_ptr connectionWeak, const std::error_code &error);
 
 	void dispatchProtocolRelease();
+	std::optional<uint64_t> takeWriteErrorWarning();
 	void closeSocket();
 	void internalWorker();
 	void internalSend(const OutputMessage_ptr &outputMessage);
@@ -147,6 +149,8 @@ private:
 	std::source_location closeSource;
 	bool forcedClose = false;
 	std::error_code firstReadError;
+	std::chrono::steady_clock::time_point nextWriteWarningAt {};
+	uint64_t suppressedWriteWarnings = 0;
 
 	friend class ServicePort;
 	friend class ConnectionManager;
