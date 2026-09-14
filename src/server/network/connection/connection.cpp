@@ -20,9 +20,19 @@
 #include "server/server.hpp"
 #include "utils/tools.hpp"
 
+#ifndef USE_PRECOMPILED_HEADERS
+	#include <atomic>
+	#include <limits>
+	#include <magic_enum/magic_enum.hpp>
+	#include <optional>
+	#include <utility>
+#endif
+
 namespace {
 	constexpr auto PROTOCOL_RELEASE_RETRY_DELAY = std::chrono::milliseconds(50);
 	constexpr auto PROTOCOL_RELEASE_WARNING_INTERVAL = std::chrono::seconds(5);
+	constexpr auto WRITE_ERROR_WARNING_INTERVAL = std::chrono::seconds(5);
+	std::atomic<uint64_t> nextConnectionId { 1 };
 
 	bool shouldLogProtocolReleaseRetry() {
 		static std::mutex warningLock;
@@ -36,6 +46,18 @@ namespace {
 		nextWarningAt = now + PROTOCOL_RELEASE_WARNING_INTERVAL;
 		return true;
 	}
+}
+
+std::optional<uint64_t> Connection::takeWriteErrorWarning() {
+	const auto now = std::chrono::steady_clock::now();
+	if (now < nextWriteWarningAt) {
+		if (suppressedWriteWarnings < std::numeric_limits<uint64_t>::max()) {
+			++suppressedWriteWarnings;
+		}
+		return std::nullopt;
+	}
+	nextWriteWarningAt = now + WRITE_ERROR_WARNING_INTERVAL;
+	return std::exchange(suppressedWriteWarnings, 0);
 }
 
 ConnectionManager &ConnectionManager::getInstance() {
@@ -76,19 +98,27 @@ Connection::Connection(asio::io_service &initIoService, ConstServicePort_ptr ini
 	protocolReleaseRetryTimer(initIoService),
 	service_port(std::move(initservicePort)),
 	transportCodec(&TransportCodecs::rawClientFirst()),
-	socket(initIoService), m_msg() {
+	socket(initIoService), m_msg(),
+	connectionId(nextConnectionId.fetch_add(1, std::memory_order_relaxed)) {
 }
 
-void Connection::close(bool force) {
+void Connection::close(bool force, const std::source_location &source) {
 	ConnectionManager::getInstance().releaseConnection(shared_from_this());
 
 	std::scoped_lock lock(connectionLock);
 	ip = 0;
 
 	if (connectionState == CONNECTION_STATE_CLOSED) {
+		if (force && socket.is_open()) {
+			closeSource = source;
+			forcedClose = true;
+			closeSocket();
+		}
 		return;
 	}
 	connectionState = CONNECTION_STATE_CLOSED;
+	closeSource = source;
+	forcedClose = force;
 
 	if (protocol) {
 		dispatchProtocolRelease();
@@ -198,6 +228,9 @@ void Connection::parseProxyIdentification(const std::error_code &error) {
 	readTimer.cancel();
 
 	if (error || connectionState == CONNECTION_STATE_CLOSED) {
+		if (error && error != asio::error::operation_aborted && !firstReadError) {
+			firstReadError = error;
+		}
 		if (error != asio::error::operation_aborted && error != asio::error::eof && error != asio::error::connection_reset) {
 			g_logger().debug("[Connection::parseProxyIdentification] - Read error: {}", error.message());
 		}
@@ -252,6 +285,9 @@ void Connection::parseHeader(const std::error_code &error) {
 	readTimer.cancel();
 
 	if (error) {
+		if (error != asio::error::operation_aborted && !firstReadError) {
+			firstReadError = error;
+		}
 		if (error != asio::error::operation_aborted && error != asio::error::eof && error != asio::error::connection_reset) {
 			g_logger().debug("[Connection::parseHeader] - Read error: {}", error.message());
 		}
@@ -300,6 +336,9 @@ void Connection::parsePacket(const std::error_code &error) {
 
 	if (error || connectionState == CONNECTION_STATE_CLOSED) {
 		if (error) {
+			if (error != asio::error::operation_aborted && !firstReadError) {
+				firstReadError = error;
+			}
 			g_logger().debug("[Connection::parsePacket] - Read error: {}", error.message());
 		}
 		close(FORCE_CLOSE);
@@ -395,6 +434,11 @@ void Connection::send(const OutputMessage_ptr &outputMessage) {
 
 void Connection::internalWorker() {
 	std::unique_lock lock(connectionLock);
+	if (!socket.is_open()) {
+		messageQueue.clear();
+		return;
+	}
+
 	if (messageQueue.empty()) {
 		if (connectionState == CONNECTION_STATE_CLOSED) {
 			closeSocket();
@@ -402,7 +446,7 @@ void Connection::internalWorker() {
 		return;
 	}
 
-	const auto &outputMessage = messageQueue.front();
+	const auto outputMessage = messageQueue.front();
 	lock.unlock();
 	protocol->onSendMessage(outputMessage);
 	lock.lock();
@@ -421,6 +465,13 @@ uint32_t Connection::getIP() {
 			ip = 0;
 		} else {
 			ip = htonl(endpoint.address().to_v4().to_uint());
+			acceptedAt = std::chrono::steady_clock::now();
+			remoteAddress = endpoint.address().to_string(error);
+			remotePort = endpoint.port();
+			const auto localEndpoint = socket.local_endpoint(error);
+			if (!error) {
+				localPort = localEndpoint.port();
+			}
 		}
 	}
 	return ip;
@@ -446,32 +497,72 @@ InitialTransportState Connection::getInitialTransportState() const {
 }
 
 void Connection::internalSend(const OutputMessage_ptr &outputMessage) {
+	// A forced close can occur while protocol preparation releases the connection lock.
+	if (!socket.is_open()) {
+		messageQueue.clear();
+		return;
+	}
+
 	writeTimer.expires_from_now(std::chrono::seconds(CONNECTION_WRITE_TIMEOUT));
 	writeTimer.async_wait([self = std::weak_ptr<Connection>(shared_from_this())](const std::error_code &error) { Connection::handleTimeout(self, error); });
 
 	try {
-		asio::async_write(socket, asio::buffer(outputMessage->getOutputBuffer(), outputMessage->getLength()), [self = shared_from_this()](const std::error_code &error, std::size_t N) { self->onWriteOperation(error); });
+		const auto requestedBytes = outputMessage->getLength();
+		const auto socketOpenAtStart = socket.is_open();
+		asio::async_write(socket, asio::buffer(outputMessage->getOutputBuffer(), requestedBytes), [self = shared_from_this(), requestedBytes, socketOpenAtStart](const std::error_code &error, size_t bytesTransferred) {
+			self->onWriteOperation(error, bytesTransferred, requestedBytes, socketOpenAtStart);
+		});
 	} catch (const std::system_error &e) {
 		g_logger().error("[Connection::internalSend] - Exception in async_write: {}", e.what());
 		close(FORCE_CLOSE);
 	}
 }
 
-void Connection::onWriteOperation(const std::error_code &error) {
+void Connection::logWriteError(const std::error_code &error, size_t bytesTransferred, size_t requestedBytes, bool socketOpenAtStart) {
+	const auto warning = error == asio::error::operation_aborted ? std::nullopt : takeWriteErrorWarning();
+#ifndef DEBUG_LOG
+	if (!warning) {
+		return;
+	}
+#endif
+	const auto ageMs = acceptedAt == std::chrono::steady_clock::time_point {} ? -1 : std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - acceptedAt).count();
+	const auto message = fmt::format(
+		"[Connection::onWriteOperation] - Write error: {} (code={}, category={}); connection_id={}, remote={}:{}, local_port={}, age_ms={}, "
+		"state={}, received_first={}, socket_open_at_write={}, socket_open_now={}, bytes_written={}/{}, queued_messages={}, "
+		"close_requested_by={}, close_line={}, forced_close={}, first_read_error={}:{}",
+		error.message(), error.value(), error.category().name(), connectionId, remoteAddress, remotePort, localPort, ageMs,
+		magic_enum::enum_name(static_cast<ConnectionState_t>(connectionState)), receivedFirst, socketOpenAtStart, socket.is_open(), bytesTransferred, requestedBytes, messageQueue.size(),
+		closeSource.line() ? closeSource.function_name() : "none", closeSource.line(), forcedClose, firstReadError.category().name(), firstReadError.value()
+	);
+	if (warning) {
+		g_logger().warn("{}; suppressed_since_last_warning={}", message, *warning);
+	} else {
+		g_logger().debug(message);
+	}
+}
+
+void Connection::onWriteOperation(const std::error_code &error, size_t bytesTransferred, size_t requestedBytes, bool socketOpenAtStart) {
 	std::unique_lock lock(connectionLock);
 	writeTimer.cancel();
 
 	if (error) {
-		g_logger().error("[Connection::onWriteOperation] - Write error: {}", error.message());
+		logWriteError(error, bytesTransferred, requestedBytes, socketOpenAtStart);
 		messageQueue.clear();
 		close(FORCE_CLOSE);
 		return;
 	}
 
-	messageQueue.pop_front();
+	if (!socket.is_open()) {
+		messageQueue.clear();
+		return;
+	}
 
 	if (!messageQueue.empty()) {
-		const auto &outputMessage = messageQueue.front();
+		messageQueue.pop_front();
+	}
+
+	if (!messageQueue.empty()) {
+		const auto outputMessage = messageQueue.front();
 		lock.unlock();
 		protocol->onSendMessage(outputMessage);
 		lock.lock();
