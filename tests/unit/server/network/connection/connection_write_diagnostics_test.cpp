@@ -132,6 +132,20 @@ protected:
 		connection->parseHeader(asio::error::operation_aborted);
 	}
 
+	void expectFirstReadError(const std::function<void(const std::error_code &)> &read) {
+		logger->reset();
+		connection->firstReadError.clear();
+		const std::error_code readError = asio::error::eof;
+		read(readError);
+		read(asio::error::operation_aborted);
+		queueMessage();
+		reportFailedWrite();
+
+		const auto diagnostics = writeDiagnostics();
+		ASSERT_FALSE(diagnostics.empty());
+		EXPECT_NE(std::string::npos, diagnostics.back().second.find("first_read_error=" + std::string(readError.category().name()) + ":" + std::to_string(readError.value())));
+	}
+
 	void reportAbortedWrite() {
 		connection->onWriteOperation(asio::error::operation_aborted, 1, 3, true);
 	}
@@ -266,6 +280,13 @@ TEST_F(ConnectionWriteDiagnosticsTest, WriteFailureRetainsPeerAndReportsClosureW
 	EXPECT_NE(std::string::npos, nextDiagnostic.find("suppressed_since_last_warning=10"));
 	const std::error_code eof = asio::error::eof;
 	EXPECT_NE(std::string::npos, nextDiagnostic.find("first_read_error=" + std::string(eof.category().name()) + ":" + std::to_string(eof.value())));
+	EXPECT_EQ(std::string::npos, nextDiagnostic.find("age_ms=-1"));
+}
+
+TEST_F(ConnectionWriteDiagnosticsTest, FirstReadErrorSurvivesCancellationInEveryReadHandler) {
+	expectFirstReadError([this](const std::error_code &error) { connection->parseProxyIdentification(error); });
+	expectFirstReadError([this](const std::error_code &error) { connection->parseHeader(error); });
+	expectFirstReadError([this](const std::error_code &error) { connection->parsePacket(error); });
 }
 
 TEST_F(ConnectionWriteDiagnosticsTest, CancellationDoesNotProduceWarning) {
