@@ -74,6 +74,7 @@ protected:
 		InMemoryLogger::install(*injector);
 		injector->install(di::bind<Dispatcher>.to<LoopbackDispatcher>().in(di::singleton));
 		DI::setTestContainer(injector.get());
+		g_dispatcher().init();
 		logger = &dynamic_cast<InMemoryLogger &>(g_logger());
 		logger->reset();
 		connection = ConnectionManager::getInstance().createConnection(io, nullptr);
@@ -280,7 +281,14 @@ TEST_F(ConnectionWriteDiagnosticsTest, WriteFailureRetainsPeerAndReportsClosureW
 	EXPECT_NE(std::string::npos, nextDiagnostic.find("suppressed_since_last_warning=10"));
 	const std::error_code eof = asio::error::eof;
 	EXPECT_NE(std::string::npos, nextDiagnostic.find("first_read_error=" + std::string(eof.category().name()) + ":" + std::to_string(eof.value())));
-	EXPECT_EQ(std::string::npos, nextDiagnostic.find("age_ms=-1"));
+
+	logger->reset();
+	const auto unacceptedConnection = ConnectionManager::getInstance().createConnection(io, nullptr);
+	unacceptedConnection->onWriteOperation(asio::error::bad_descriptor, 0, 3, true);
+	const auto unacceptedDiagnostics = writeDiagnostics();
+	ASSERT_EQ(1, unacceptedDiagnostics.size());
+	EXPECT_NE(std::string::npos, unacceptedDiagnostics.front().second.find("age_ms=-1"));
+	EXPECT_NE(std::string::npos, unacceptedDiagnostics.front().second.find("close_line=none"));
 }
 
 TEST_F(ConnectionWriteDiagnosticsTest, FirstReadErrorSurvivesCancellationInEveryReadHandler) {
