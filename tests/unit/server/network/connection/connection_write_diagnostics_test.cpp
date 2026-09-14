@@ -14,6 +14,7 @@
 #ifndef USE_PRECOMPILED_HEADERS
 	#include <gtest/gtest.h>
 	#include <array>
+	#include <functional>
 	#include <iostream>
 	#include <string>
 	#include <thread>
@@ -47,11 +48,20 @@ namespace {
 			if (preparedMessages == closeOnPreparation) {
 				getConnection()->close(true);
 			}
+			if (clearQueueOnPreparation) {
+				clearQueueOnPreparation();
+			}
 			Protocol::onSendMessage(message);
+		}
+
+		void release() override {
+			++releaseCount;
 		}
 
 		size_t preparedMessages = 0;
 		size_t closeOnPreparation = 0;
+		std::function<void()> clearQueueOnPreparation;
+		size_t releaseCount = 0;
 	};
 }
 
@@ -324,8 +334,40 @@ TEST_F(ConnectionWriteDiagnosticsTest, GracefulCloseCanEscalateToForcedClose) {
 	EXPECT_FALSE(socketOpen());
 	runQueuedWork();
 	EXPECT_EQ(0, protocol->preparedMessages);
+	EXPECT_EQ(1, protocol->releaseCount);
 	EXPECT_TRUE(writeDiagnostics().empty());
 	expectDrained();
+}
+
+TEST_F(ConnectionWriteDiagnosticsTest, WorkerKeepsMessageAliveWhenPreparationClearsQueue) {
+	const auto protocol = useQueuedProtocol();
+	protocol->clearQueueOnPreparation = [this] { connection->messageQueue.clear(); };
+	queuePublicSend();
+	runQueuedWork();
+
+	std::array<uint8_t, 3> received {};
+	std::error_code error;
+	ASSERT_EQ(3, peer.available(error));
+	ASSERT_FALSE(error);
+	ASSERT_EQ(3, asio::read(peer, asio::buffer(received), error));
+	EXPECT_FALSE(error);
+	EXPECT_EQ((std::array<uint8_t, 3> { 0x31, 0x72, 0xA5 }), received);
+}
+
+TEST_F(ConnectionWriteDiagnosticsTest, CompletionKeepsMessageAliveWhenPreparationClearsQueue) {
+	const auto protocol = useQueuedProtocol();
+	protocol->clearQueueOnPreparation = [this] { connection->messageQueue.clear(); };
+	const auto firstMessage = queueMessage();
+	queueMessage();
+	startWrite(firstMessage);
+
+	std::array<uint8_t, 6> received {};
+	std::error_code error;
+	ASSERT_EQ(6, peer.available(error));
+	ASSERT_FALSE(error);
+	ASSERT_EQ(6, asio::read(peer, asio::buffer(received), error));
+	EXPECT_FALSE(error);
+	EXPECT_EQ((std::array<uint8_t, 6> { 0x31, 0x72, 0xA5, 0x31, 0x72, 0xA5 }), received);
 }
 
 TEST_F(ConnectionWriteDiagnosticsTest, QueuedGracefulCloseSendsAllMessages) {
