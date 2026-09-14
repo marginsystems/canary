@@ -561,7 +561,9 @@ void Connection::onWriteOperation(const std::error_code &error, size_t bytesTran
 		return;
 	}
 
-	messageQueue.pop_front();
+	if (!messageQueue.empty()) {
+		messageQueue.pop_front();
+	}
 
 	if (!messageQueue.empty()) {
 		const auto outputMessage = messageQueue.front();

@@ -12,6 +12,7 @@
 #include "lib/logging/in_memory_logger.hpp"
 
 #ifndef USE_PRECOMPILED_HEADERS
+	#include <atomic>
 	#include <gtest/gtest.h>
 	#include <array>
 	#include <functional>
@@ -61,7 +62,7 @@ namespace {
 		size_t preparedMessages = 0;
 		size_t closeOnPreparation = 0;
 		std::function<void()> clearQueueOnPreparation;
-		size_t releaseCount = 0;
+		std::atomic_size_t releaseCount = 0;
 	};
 }
 
@@ -334,7 +335,10 @@ TEST_F(ConnectionWriteDiagnosticsTest, GracefulCloseCanEscalateToForcedClose) {
 	EXPECT_FALSE(socketOpen());
 	runQueuedWork();
 	EXPECT_EQ(0, protocol->preparedMessages);
-	EXPECT_EQ(1, protocol->releaseCount);
+	for (size_t attempt = 0; attempt < 200 && protocol->releaseCount.load() == 0; ++attempt) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	EXPECT_EQ(1, protocol->releaseCount.load());
 	EXPECT_TRUE(writeDiagnostics().empty());
 	expectDrained();
 }
