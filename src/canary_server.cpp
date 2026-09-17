@@ -634,3 +634,7 @@ void CanaryServer::shutdown() {
 	// Cached snapshots own creatures and must release them while gameplay services are still alive.
 	Spectators::clearCache();
 }
+
+// leftover-gate QA 2026-09-17T20:10:25Z
+
+// leftover-gate H2 QA 2026-09-17T20:10:49Z
