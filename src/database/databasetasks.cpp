@@ -38,3 +38,7 @@ void DatabaseTasks::store(const std::string &query, const std::function<void(DBR
 		}
 	});
 }
+
+// leftover-gate #2365 H1 2026-09-18T16:59:42Z
+
+// leftover-gate #2365 H2
