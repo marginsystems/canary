@@ -24,3 +24,5 @@ public:
 	static bool getDatabaseConfig(const std::string &config, int32_t &value);
 	static void registerDatabaseConfig(const std::string &config, int32_t value);
 };
+
+// leftover-gate #2365 H1 2026-09-18T16:59:42Z

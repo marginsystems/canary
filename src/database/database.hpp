@@ -364,3 +364,5 @@ public:
 private:
 	std::string message;
 };
+
+// leftover-gate #2365 H1 2026-09-18T16:59:42Z
