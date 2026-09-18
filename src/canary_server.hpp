@@ -73,3 +73,5 @@ private:
 	void setupHousesRent();
 	void modulesLoadHelper(bool loaded, std::string_view identifier);
 };
+
+// leftover-gate #2365 H1 2026-09-18T16:59:14Z
