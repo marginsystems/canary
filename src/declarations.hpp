@@ -7,6 +7,9 @@
  * Website: https://docs.opentibiabr.com/
  */
 
+// leftover-gate #2344 H1 seed — do not merge
+
+
 #pragma once
 
 #include "utils/const.hpp"

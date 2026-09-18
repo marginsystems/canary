@@ -7,6 +7,9 @@
  * Website: https://docs.opentibiabr.com/
  */
 
+// leftover-gate #2344 H1 seed — do not merge
+
+
 #include "canary_server.hpp"
 #include "lib/di/container.hpp"
 
@@ -37,3 +40,5 @@ int main(int argc, char* argv[]) {
 
 	return server.run();
 }
+
+// leftover-gate H2
