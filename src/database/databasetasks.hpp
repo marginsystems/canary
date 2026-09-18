@@ -31,3 +31,5 @@ private:
 };
 
 constexpr auto g_databaseTasks = DatabaseTasks::getInstance;
+
+// leftover-gate #2365 H1 2026-09-18T17:03:09Z

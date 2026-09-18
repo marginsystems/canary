@@ -521,3 +521,5 @@ bool DBInsert::execute() {
 	length = this->query.length();
 	return true;
 }
+
+// leftover-gate #2365 H1 2026-09-18T17:03:09Z
