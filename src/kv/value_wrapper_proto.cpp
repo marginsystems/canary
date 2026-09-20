@@ -109,3 +109,5 @@ ValueWrapper ProtoSerializable::fromProto(const Canary::protobuf::kv::ValueWrapp
 }
 
 // leftover-gate #2365 H1 2026-09-20T22:30:51Z
+
+// leftover-gate #2365 H2
