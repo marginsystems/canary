@@ -40,3 +40,5 @@ MonsterCombatIntentionResult MonsterCombatIntentionEvaluator::evaluate(const Mon
 	}
 	return result;
 }
+
+// spine-bounce-qa H1 2026-09-20T15:49:20Z

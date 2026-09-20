@@ -529,3 +529,5 @@ bool spawnBlock_t::hasBoss() const {
 		return monsterType->isBoss();
 	});
 }
+
+// spine-bounce-qa H1 2026-09-20T15:49:20Z
