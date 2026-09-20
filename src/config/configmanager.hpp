@@ -71,3 +71,5 @@ private:
 };
 
 constexpr auto g_configManager = ConfigManager::getInstance;
+
+// leftover-gate #2365 H1 2026-09-20T22:30:51Z

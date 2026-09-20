@@ -63,3 +63,5 @@ std::optional<ValueWrapper> ValueWrapper::get(size_t index) const {
 	}
 	return std::nullopt;
 }
+
+// leftover-gate #2365 H1 2026-09-20T22:30:51Z
